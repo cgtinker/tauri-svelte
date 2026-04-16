@@ -343,17 +343,31 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 // manually drop the state
                 // see https://github.com/tauri-apps/tauri/issues/14420
+                //
+                // Drain surfaces first, then drop the renderer. This handles the
+                // Cmd+Q / Ctrl+Q path where macOS fires applicationWillTerminate
+                // without first sending WindowEvent::Destroyed for open windows.
                 {
-                    let state: State<ThreadSafeRenderer> = app_handle.state();
-                    let renderer = state.lock().expect("well").take();
-                    std::mem::drop(renderer);
+                    let renderer_state: State<ThreadSafeRenderer> = app_handle.state();
+                    let surface_state: State<SurfaceMap> = app_handle.state();
+                    let mut renderer = renderer_state.lock().expect("well");
+                    if let Some(renderer_inner) = renderer.as_mut() {
+                        if let Some(surface_map) = surface_state.lock().expect("well").as_mut() {
+                            for hashes in surface_map.values() {
+                                for &hash in hashes {
+                                    renderer_inner.destroy_surface(hash);
+                                }
+                            }
+                        }
+                    }
                 }
                 {
                     let state: State<SurfaceMap> = app_handle.state();
-                    let surface_map = state.lock().expect("well").take();
-                    // surface_map should be empty. it should be destructed when closing window
-                    debug_assert!(surface_map.clone().unwrap().len() == 0);
-                    std::mem::drop(surface_map);
+                    std::mem::drop(state.lock().expect("well").take());
+                }
+                {
+                    let state: State<ThreadSafeRenderer> = app_handle.state();
+                    std::mem::drop(state.lock().expect("well").take());
                 }
                 println!("close");
             }
